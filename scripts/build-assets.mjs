@@ -52,9 +52,26 @@ function toolbox() {
 async function get(url,isJson=true) {
   const headers={'User-Agent':'yogeshkrishna-profile','Accept':isJson?'application/vnd.github+json':'text/html'};
   if(process.env.GH_TOKEN && url.startsWith('https://api.github.com/')) headers.Authorization=`Bearer ${process.env.GH_TOKEN}`;
-  const r=await fetch(url,{headers,signal:AbortSignal.timeout(25000)});
-  if(!r.ok) throw new Error(`${new URL(url).pathname}: HTTP ${r.status}`);
-  return isJson?r.json():r.text();
+  const endpoint=new URL(url),attempts=3;
+  for(let attempt=1;attempt<=attempts;attempt++) {
+    try {
+      // Each attempt gets a fresh timeout, covering both headers and body.
+      const r=await fetch(url,{headers,signal:AbortSignal.timeout(25000)});
+      if(!r.ok) {
+        const error=new Error(`HTTP ${r.status}`);
+        error.retryable=[408,429,500,502,503,504].includes(r.status);
+        await r.body?.cancel();
+        throw error;
+      }
+      return isJson?await r.json():await r.text();
+    } catch(error) {
+      const retryable=error.retryable || ['TimeoutError','AbortError','TypeError'].includes(error.name);
+      const context=`${endpoint.hostname}${endpoint.pathname}${endpoint.search} (attempt ${attempt}/${attempts}): ${error.message}`;
+      if(!retryable || attempt===attempts) throw new Error(`${context}; retaining previous cards.`,{cause:error});
+      console.warn(`${context}; retrying.`);
+      await new Promise(resolve=>setTimeout(resolve,1000*2**(attempt-1)));
+    }
+  }
 }
 function contributionDays(html) {
   const tips=new Map([...html.matchAll(/<tool-tip\b([^>]*)>([\s\S]*?)<\/tool-tip>/g)].map(m=>[m[1].match(/\bfor="([^"]+)"/)?.[1],m[2].replace(/<[^>]*>/g,'').trim()]));
